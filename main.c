@@ -1,222 +1,174 @@
 #include <stdio.h>
-
 #include <stdlib.h>
-
 #include <pthread.h>
+#include <unistd.h>
+#include <stdbool.h>
 
-#include <time.h>
-
-#include <unistd.h> 
-
-
-
-#define LOWER_NUM 1
-
-#define UPPER_NUM 10000
 
 #define BUFFER_SIZE 100
-
-#define MAX_COUNT 100
-
-
+#define MAX_COUNT 10000
 
 int buffer[BUFFER_SIZE];
-
-int count = 0;
-
-int consumed = 0;
-
-
-
-pthread_mutex_t mutex = PTHREAD_MUTEX_INITIALIZER;
-
-pthread_cond_t cond_full = PTHREAD_COND_INITIALIZER;
+int buffer_index = 0;
+pthread_mutex_t lock = PTHREAD_MUTEX_INITIALIZER;
+pthread_cond_t empty_cond = PTHREAD_COND_INITIALIZER;
+pthread_cond_t full_cond = PTHREAD_COND_INITIALIZER;
+int producer_finished = 0;
+int even_count = 0;
+int odd_count = 0;
 
 
 
-void* producer(void* arg) {
+// Producer function to generate random numbers and write them to a file
 
-    FILE* all_file = fopen("all.txt", "w");
+void *producer(void *arg) {
 
+    // Open file for writing
 
+    FILE *file = fopen("all.txt", "w");
 
-    for (int i = 0; i < MAX_COUNT; i++) {
-
-        pthread_mutex_lock(&mutex);
-
-
-
-        while (count == BUFFER_SIZE)
-
-            pthread_cond_wait(&cond_full, &mutex);
-
-
-
-        int num = LOWER_NUM + rand() % (UPPER_NUM - LOWER_NUM + 1);
-
-        buffer[count++] = num;
-
-
-
-        fprintf(all_file, "%d\n", num); // Write to all.txt
-
-
-
-        pthread_cond_signal(&cond_full);
-
-        pthread_mutex_unlock(&mutex);
-
-    }
-
-
-
-    fclose(all_file);
-
-    pthread_exit(NULL);
-
-}
-
-
-
-void* consumer(void* arg) {
-
-    int parity = *(int*)arg;
-
-    char even_filename[] = "even.txt";
-
-    char odd_filename[] = "odd.txt";
-
-    FILE* even_file = fopen(even_filename, "a"); // Open in append mode
-
-    FILE* odd_file = fopen(odd_filename, "a"); // Open in append mode
-
-
-
-    if (even_file == NULL || odd_file == NULL) {
+    if (file == NULL) {
 
         perror("Error opening file");
 
-        pthread_exit(NULL);
+        exit(EXIT_FAILURE);
+
+    }
+    while (1) {
+
+        // Lock mutex before accessing shared resources
+
+        pthread_mutex_lock(&lock);
+        while (buffer_index == BUFFER_SIZE) {
+
+            pthread_cond_wait(&empty_cond, &lock);
+
+        }
+        // Check if the required number of elements has been produced
+
+        if (even_count + odd_count >= MAX_COUNT) {
+            producer_finished = 1;
+            pthread_cond_broadcast(&full_cond);
+            pthread_mutex_unlock(&lock);
+            fclose(file);
+            break;
+
+        }
+        int number = rand() % 10000 + 1;
+
+        // Add number to buffer
+        buffer[buffer_index++] = number;
+        fprintf(file, "%d\n", number);
+        if (number % 2 == 0) {
+            even_count++;
+
+        } else {
+            odd_count++;
+
+        }
+        // Signal that buffer is not empty
+
+        pthread_cond_signal(&full_cond);
+
+        // Unlock mutex
+
+        pthread_mutex_unlock(&lock);
+
+        // Introduce a small delay
+
+        usleep(100);
 
     }
 
 
 
-    struct timespec sleep_time;
+    return NULL;
 
-    sleep_time.tv_sec = 0;
+}
+// Customer function to read numbers from buffer and write them to a file based on parity
 
-    sleep_time.tv_nsec = 1000000; // 1 millisecond
+void *customer(void *arg) {
 
+    // Determine whether to write even or odd numbers to file
 
+    int parity = *((int *)arg);
 
-    while (1) {
+    char filename[20];
 
-        pthread_mutex_lock(&mutex);
+    sprintf(filename, "%s.txt", (parity == 0) ? "even" : "odd");
 
+    FILE *file = fopen(filename, "a");
 
+    // Loop to read numbers from buffer
 
-        if (consumed >= MAX_COUNT || count > 0) {
+    while (true) {
+        pthread_mutex_lock(&lock);
+        if (buffer_index == 0 && producer_finished) {
+            pthread_mutex_unlock(&lock);
 
-            if (count > 0) {
-
-                int num = buffer[--count];
-
-                if (num % 2 == 0) { // Check if num is even
-
-                    printf("Writing %d to even.txt\n", num);
-
-                    fprintf(even_file, "%d\n", num);
-
-                    fflush(even_file); // Flush the file to ensure immediate writing
-
-                } else { // num is odd
-
-                    printf("Writing %d to odd.txt\n", num);
-
-                    fprintf(odd_file, "%d\n", num);
-
-                    fflush(odd_file); // Flush the file to ensure immediate writing
-
-                }
-
-                consumed++;
-
-            }
-
-
-
-            pthread_mutex_unlock(&mutex);
-
-        } else {
-
-            pthread_mutex_unlock(&mutex);
-
-            nanosleep(&sleep_time, NULL); // Sleep for a short time to avoid busy waiting
-
-        }
-
-
-
-        if (consumed >= MAX_COUNT)
+            fclose(file);
 
             break;
 
+        }
+
+        if (buffer_index > 0) {
+
+            int number = buffer[buffer_index-1];
+
+            if (number % 2 == parity) {
+
+                if (file != NULL) {
+
+                    fprintf(file, "%d\n", number);
+
+                }
+
+                
+
+                buffer_index--;
+
+            }
+
+        }
+
+        
+
+        pthread_mutex_unlock(&lock);
+
     }
 
 
 
-    if (fclose(even_file) != 0 || fclose(odd_file) != 0) {
-
-        perror("Error closing file");
-
-        pthread_exit(NULL);
-
-    }
-
-
-
-    pthread_exit(NULL);
+    return NULL;
 
 }
 
-
-
 int main() {
+
+    // Seed the random number generator
 
     srand(time(NULL));
 
 
 
-    pthread_t producer_thread, consumer_thread1, consumer_thread2;
+    // Initialize thread identifiers for producer and customers
 
-    int even = 0;
+    pthread_t prod_tid, cust1_tid, cust2_tid;
 
-    int odd = 1;
+    int cust_odd_parity = 0;
 
+    int cust_even_parity = 1;
+    pthread_create(&prod_tid, NULL, producer, NULL);
 
+    pthread_create(&cust1_tid, NULL, customer, &cust_odd_parity);
 
-    pthread_create(&producer_thread, NULL, producer, NULL);
+    pthread_create(&cust2_tid, NULL, customer, &cust_even_parity);
+    pthread_join(prod_tid, NULL);
 
-    pthread_create(&consumer_thread1, NULL, consumer, &even);
+    pthread_join(cust1_tid, NULL);
 
-    pthread_create(&consumer_thread2, NULL, consumer, &odd);
-
-
-
-    pthread_join(producer_thread, NULL);
-
-    pthread_join(consumer_thread1, NULL);
-
-    pthread_join(consumer_thread2, NULL);
-
-
-
-    pthread_mutex_destroy(&mutex);
-
-    pthread_cond_destroy(&cond_full);
-
-
+    pthread_join(cust2_tid, NULL);
 
     return 0;
 
