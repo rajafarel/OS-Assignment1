@@ -4,7 +4,8 @@
 #include <unistd.h>
 #include <stdbool.h>
 
-
+#define LOWER_NUM 1
+#define UPPER_NUM 10000
 #define BUFFER_SIZE 100
 #define MAX_COUNT 10000
 
